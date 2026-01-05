@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
+import { CartProvider, useCart } from "./CartContext";
 
 const OCEAN_THEME = {
   primary: "#2563EB",
@@ -102,18 +103,19 @@ function safeParseJson(maybeJson, fallback) {
   }
 }
 
-// PUBLIC_INTERFACE
-function App() {
+function findMenuItem(itemId) {
+  return SAMPLE_MENU.find((m) => m.id === itemId) || null;
+}
+
+function AppContent() {
   const [theme, setTheme] = useState("light");
   const [cartOpen, setCartOpen] = useState(false);
 
   const [query, setQuery] = useState("");
   const [activeTag, setActiveTag] = useState("All");
 
-  const [cartItems, setCartItems] = useState(() => {
-    const saved = window.localStorage.getItem("food_order_cart_v1");
-    return saved ? safeParseJson(saved, []) : [];
-  });
+  const { items: cartItems, itemsCount: cartCount, subtotal: cartSubtotal, promo, promoDiscount, fees: cartFees, total: cartTotal, addItem, incrementItem, decrementItem, removeItem, clearCart, applyPromo, clearPromo } =
+    useCart();
 
   const [order, setOrder] = useState(() => {
     const saved = window.localStorage.getItem("food_order_last_order_v1");
@@ -125,6 +127,7 @@ function App() {
   const [deliveryAddress, setDeliveryAddress] = useState("");
   const [notes, setNotes] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("card");
+  const [promoInput, setPromoInput] = useState("");
   const [isPlacingOrder, setIsPlacingOrder] = useState(false);
 
   const progressTimerRef = useRef(null);
@@ -140,11 +143,7 @@ function App() {
     document.documentElement.setAttribute("data-theme", theme);
   }, [theme]);
 
-  // Persist cart & order
-  useEffect(() => {
-    window.localStorage.setItem("food_order_cart_v1", JSON.stringify(cartItems));
-  }, [cartItems]);
-
+  // Persist order
   useEffect(() => {
     window.localStorage.setItem("food_order_last_order_v1", JSON.stringify(order));
   }, [order]);
@@ -204,30 +203,6 @@ function App() {
     });
   }, [query, activeTag]);
 
-  const cartCount = useMemo(() => cartItems.reduce((sum, it) => sum + it.quantity, 0), [cartItems]);
-
-  const cartSubtotal = useMemo(
-    () => cartItems.reduce((sum, it) => sum + it.quantity * it.unitPrice, 0),
-    [cartItems]
-  );
-
-  const cartFees = useMemo(() => {
-    // simple fee model for UI realism
-    const serviceFee = cartSubtotal > 0 ? Math.min(3.5, Math.max(1.25, cartSubtotal * 0.08)) : 0;
-    const deliveryFee = cartSubtotal > 0 ? 2.99 : 0;
-    const tax = cartSubtotal > 0 ? cartSubtotal * 0.0825 : 0;
-    return { serviceFee, deliveryFee, tax };
-  }, [cartSubtotal]);
-
-  const cartTotal = useMemo(
-    () => cartSubtotal + cartFees.serviceFee + cartFees.deliveryFee + cartFees.tax,
-    [cartSubtotal, cartFees]
-  );
-
-  function findMenuItem(itemId) {
-    return SAMPLE_MENU.find((m) => m.id === itemId) || null;
-  }
-
   // PUBLIC_INTERFACE
   function toggleTheme() {
     setTheme((prev) => (prev === "light" ? "dark" : "light"));
@@ -237,46 +212,8 @@ function App() {
   function addToCart(itemId) {
     const item = findMenuItem(itemId);
     if (!item) return;
-
-    setCartItems((prev) => {
-      const existing = prev.find((p) => p.itemId === itemId);
-      if (existing) {
-        return prev.map((p) => (p.itemId === itemId ? { ...p, quantity: p.quantity + 1 } : p));
-      }
-      return [
-        ...prev,
-        { itemId, name: item.name, unitPrice: item.price, quantity: 1, notes: "" },
-      ];
-    });
-
+    addItem(item);
     setCartOpen(true);
-  }
-
-  // PUBLIC_INTERFACE
-  function decrementCartItem(itemId) {
-    setCartItems((prev) => {
-      const existing = prev.find((p) => p.itemId === itemId);
-      if (!existing) return prev;
-      if (existing.quantity <= 1) return prev.filter((p) => p.itemId !== itemId);
-      return prev.map((p) => (p.itemId === itemId ? { ...p, quantity: p.quantity - 1 } : p));
-    });
-  }
-
-  // PUBLIC_INTERFACE
-  function incrementCartItem(itemId) {
-    setCartItems((prev) =>
-      prev.map((p) => (p.itemId === itemId ? { ...p, quantity: p.quantity + 1 } : p))
-    );
-  }
-
-  // PUBLIC_INTERFACE
-  function removeCartItem(itemId) {
-    setCartItems((prev) => prev.filter((p) => p.itemId !== itemId));
-  }
-
-  // PUBLIC_INTERFACE
-  function clearCart() {
-    setCartItems([]);
   }
 
   function canCheckout() {
@@ -302,6 +239,8 @@ function App() {
         })),
         pricing: {
           subtotal: cartSubtotal,
+          promoCode: promo.code || null,
+          promoDiscount,
           ...cartFees,
           total: cartTotal,
         },
@@ -343,7 +282,7 @@ function App() {
       });
 
       // Reset cart but keep checkout fields for convenience
-      setCartItems([]);
+      clearCart();
       setCartOpen(false);
     } finally {
       setIsPlacingOrder(false);
@@ -456,7 +395,7 @@ function App() {
 
             <div className="hero__hint">
               <span className="hint-dot" aria-hidden="true" />
-              Tip: Click “Cart” anytime to checkout. Free client-side demo; backend hooks via env vars.
+              Tip: Click “Cart” anytime to checkout. Try promo <code>OCEAN10</code> to verify persistence.
             </div>
           </div>
         </section>
@@ -513,9 +452,7 @@ function App() {
             <div className="tracking__card">
               <div className="tracking__header">
                 <h2 className="section-title">Order tracking</h2>
-                <div className="section-meta">
-                  {order ? `Order #${order.id}` : "No active order"}
-                </div>
+                <div className="section-meta">{order ? `Order #${order.id}` : "No active order"}</div>
               </div>
 
               {!order ? (
@@ -541,9 +478,7 @@ function App() {
                 <div className="order">
                   <div className="order__statusRow">
                     <div className="statusPill">{order.status}</div>
-                    <div className="order__eta">
-                      {order.status === "Delivered" ? "Enjoy your meal!" : "Updating…"}
-                    </div>
+                    <div className="order__eta">{order.status === "Delivered" ? "Enjoy your meal!" : "Updating…"}</div>
                   </div>
 
                   <div className="progress">
@@ -586,6 +521,16 @@ function App() {
                       <span>Subtotal</span>
                       <span>{formatMoney(order.pricing.subtotal)}</span>
                     </div>
+
+                    {order.pricing.promoDiscount ? (
+                      <div className="totals__row">
+                        <span>
+                          Promo {order.pricing.promoCode ? <span style={{ fontWeight: 900 }}>{order.pricing.promoCode}</span> : null}
+                        </span>
+                        <span>-{formatMoney(order.pricing.promoDiscount)}</span>
+                      </div>
+                    ) : null}
+
                     <div className="totals__row">
                       <span>Fees</span>
                       <span>{formatMoney(order.pricing.serviceFee + order.pricing.deliveryFee)}</span>
@@ -677,7 +622,7 @@ function App() {
                       <div className="cartItem__actions">
                         <button
                           className="qtyBtn"
-                          onClick={() => decrementCartItem(it.itemId)}
+                          onClick={() => decrementItem(it.itemId)}
                           type="button"
                           aria-label={`Decrease quantity of ${it.name}`}
                         >
@@ -688,7 +633,7 @@ function App() {
                         </div>
                         <button
                           className="qtyBtn"
-                          onClick={() => incrementCartItem(it.itemId)}
+                          onClick={() => incrementItem(it.itemId)}
                           type="button"
                           aria-label={`Increase quantity of ${it.name}`}
                         >
@@ -697,7 +642,7 @@ function App() {
 
                         <button
                           className="linkDanger"
-                          onClick={() => removeCartItem(it.itemId)}
+                          onClick={() => removeItem(it.itemId)}
                           type="button"
                           aria-label={`Remove ${it.name} from cart`}
                         >
@@ -755,6 +700,52 @@ function App() {
                     </div>
 
                     <div className="field field--full">
+                      <label className="label" htmlFor="promo">
+                        Promo code
+                      </label>
+                      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                        <input
+                          id="promo"
+                          className="input"
+                          value={promoInput}
+                          onChange={(e) => setPromoInput(e.target.value)}
+                          placeholder="Try OCEAN10"
+                          autoComplete="off"
+                          aria-describedby="promoHelp"
+                        />
+                        <button
+                          className="btn btn-ghost"
+                          type="button"
+                          onClick={() => applyPromo(promoInput)}
+                          aria-label="Apply promo code"
+                        >
+                          Apply
+                        </button>
+                      </div>
+                      <div id="promoHelp" className="smallNote" style={{ marginTop: 8 }}>
+                        {promo.code ? (
+                          <span>
+                            Applied: <strong>{promo.code}</strong>{" "}
+                            {promo.discountRate > 0 ? `(−${Math.round(promo.discountRate * 100)}%)` : "(Not valid)"}
+                            <button
+                              type="button"
+                              className="btn btn-ghost"
+                              onClick={() => {
+                                clearPromo();
+                                setPromoInput("");
+                              }}
+                              style={{ marginLeft: 10, padding: "8px 10px" }}
+                            >
+                              Clear
+                            </button>
+                          </span>
+                        ) : (
+                          <span>Promo codes persist on reload. Example: <code>OCEAN10</code></span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="field field--full">
                       <label className="label" htmlFor="payment">
                         Payment
                       </label>
@@ -783,6 +774,14 @@ function App() {
                       <span>Subtotal</span>
                       <span>{formatMoney(cartSubtotal)}</span>
                     </div>
+
+                    {promoDiscount > 0 ? (
+                      <div className="totals__row">
+                        <span>Promo {promo.code ? <span style={{ fontWeight: 900 }}>{promo.code}</span> : ""}</span>
+                        <span>-{formatMoney(promoDiscount)}</span>
+                      </div>
+                    ) : null}
+
                     <div className="totals__row">
                       <span>Service fee</span>
                       <span>{formatMoney(cartFees.serviceFee)}</span>
@@ -824,8 +823,8 @@ function App() {
                   <div className="smallNote">
                     {apiBase ? (
                       <span>
-                        Backend enabled via <code>REACT_APP_API_BASE</code>. If the POST fails, this demo falls back to a local
-                        order.
+                        Backend enabled via <code>REACT_APP_API_BASE</code>. If the POST fails, this demo falls back to a
+                        local order.
                       </span>
                     ) : (
                       <span>
@@ -860,6 +859,16 @@ function App() {
         }
       `}</style>
     </div>
+  );
+}
+
+// PUBLIC_INTERFACE
+function App() {
+  /** App entry component that wires providers and renders the ordering experience. */
+  return (
+    <CartProvider>
+      <AppContent />
+    </CartProvider>
   );
 }
 
