@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 
 /**
  * Cart storage versioning:
@@ -49,9 +49,26 @@ function sanitizePromo(promo) {
   };
 }
 
+function safeStorageGet(key) {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeStorageSet(key, value) {
+  try {
+    window.localStorage.setItem(key, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function loadCartState() {
   // Prefer v2 payload, fallback to v1 items-only, then promo-only.
-  const savedV2 = window.localStorage.getItem(CART_STORAGE_KEY_V2);
+  const savedV2 = safeStorageGet(CART_STORAGE_KEY_V2);
   if (savedV2) {
     const parsed = safeParseJson(savedV2, null);
     if (isPlainObject(parsed) && parsed.version === CART_STORAGE_VERSION) {
@@ -62,11 +79,13 @@ function loadCartState() {
     }
   }
 
-  const savedItemsV1 = window.localStorage.getItem(CART_STORAGE_KEY_V1);
+  const savedItemsV1 = safeStorageGet(CART_STORAGE_KEY_V1);
   const items = savedItemsV1 ? sanitizeItems(safeParseJson(savedItemsV1, [])) : [];
 
-  const savedPromoV1 = window.localStorage.getItem(PROMO_STORAGE_KEY_V1);
-  const promo = savedPromoV1 ? sanitizePromo(safeParseJson(savedPromoV1, { code: "", discountRate: 0 })) : { code: "", discountRate: 0 };
+  const savedPromoV1 = safeStorageGet(PROMO_STORAGE_KEY_V1);
+  const promo = savedPromoV1
+    ? sanitizePromo(safeParseJson(savedPromoV1, { code: "", discountRate: 0 }))
+    : { code: "", discountRate: 0 };
 
   return { items, promo };
 }
@@ -74,8 +93,11 @@ function loadCartState() {
 // PUBLIC_INTERFACE
 export function CartProvider({ children }) {
   /** Provides cart + pricing state/actions across the app with localStorage persistence. */
-  const [items, setItems] = useState(() => loadCartState().items);
-  const [promo, setPromo] = useState(() => loadCartState().promo);
+  const initial = useMemo(() => loadCartState(), []);
+  const [items, setItems] = useState(() => initial.items);
+  const [promo, setPromo] = useState(() => initial.promo);
+
+  const lastPersistedRef = useRef("");
 
   // Persist unified v2 state on any change.
   useEffect(() => {
@@ -85,11 +107,20 @@ export function CartProvider({ children }) {
       promo,
       savedAt: Date.now(),
     };
-    window.localStorage.setItem(CART_STORAGE_KEY_V2, JSON.stringify(payload));
+
+    // Avoid tight loops or quota churn if persistence is failing.
+    const serialized = JSON.stringify(payload);
+    if (serialized === lastPersistedRef.current) return;
+
+    const okV2 = safeStorageSet(CART_STORAGE_KEY_V2, serialized);
 
     // Backward-compat storage keys (keep them updated so older code/tests/tools don't break).
-    window.localStorage.setItem(CART_STORAGE_KEY_V1, JSON.stringify(items));
-    window.localStorage.setItem(PROMO_STORAGE_KEY_V1, JSON.stringify(promo));
+    // Only attempt if v2 succeeded; if storage is unavailable this prevents repeated exceptions.
+    if (okV2) {
+      safeStorageSet(CART_STORAGE_KEY_V1, JSON.stringify(items));
+      safeStorageSet(PROMO_STORAGE_KEY_V1, JSON.stringify(promo));
+      lastPersistedRef.current = serialized;
+    }
   }, [items, promo]);
 
   const itemsCount = useMemo(() => items.reduce((sum, it) => sum + it.quantity, 0), [items]);
@@ -180,7 +211,10 @@ export function CartProvider({ children }) {
     return { serviceFee, deliveryFee, tax };
   }, [subtotal, promoDiscount]);
 
-  const total = useMemo(() => subtotal - promoDiscount + fees.serviceFee + fees.deliveryFee + fees.tax, [subtotal, promoDiscount, fees]);
+  const total = useMemo(
+    () => subtotal - promoDiscount + fees.serviceFee + fees.deliveryFee + fees.tax,
+    [subtotal, promoDiscount, fees]
+  );
 
   const value = useMemo(
     () => ({

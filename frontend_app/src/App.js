@@ -10,6 +10,8 @@ const OCEAN_THEME = {
   text: "#111827",
 };
 
+const LAST_ORDER_STORAGE_KEY = "food_order_last_order_v1";
+
 // A small, pleasant set of sample foods to keep the app functional without a backend.
 const SAMPLE_MENU = [
   {
@@ -103,8 +105,59 @@ function safeParseJson(maybeJson, fallback) {
   }
 }
 
+function safeStorageGet(key) {
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeStorageSet(key, value) {
+  try {
+    window.localStorage.setItem(key, value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function findMenuItem(itemId) {
   return SAMPLE_MENU.find((m) => m.id === itemId) || null;
+}
+
+function normalizeApiBase(raw) {
+  const v = (raw || "").trim();
+  if (!v) return "";
+  return v.replace(/\/$/, "");
+}
+
+function getDemoModeInfo() {
+  const apiBase = normalizeApiBase(process.env.REACT_APP_API_BASE || "");
+  const wsUrl = (process.env.REACT_APP_WS_URL || "").trim();
+  const isDemoMode = !apiBase; // deterministic: no API base => demo mode
+  return { apiBase, wsUrl, isDemoMode };
+}
+
+/**
+ * Returns an ordered list of focusable elements inside `root`.
+ * Based on common a11y patterns for modal focus trapping.
+ */
+function getFocusableElements(root) {
+  if (!root) return [];
+  const selector = [
+    'a[href]:not([tabindex="-1"])',
+    'button:not([disabled]):not([tabindex="-1"])',
+    'textarea:not([disabled]):not([tabindex="-1"])',
+    'input:not([disabled]):not([type="hidden"]):not([tabindex="-1"])',
+    'select:not([disabled]):not([tabindex="-1"])',
+    '[tabindex]:not([tabindex="-1"])',
+  ].join(",");
+  return Array.from(root.querySelectorAll(selector)).filter((el) => {
+    // Exclude elements that are not visible.
+    const style = window.getComputedStyle(el);
+    return style.visibility !== "hidden" && style.display !== "none";
+  });
 }
 
 function AppContent() {
@@ -114,11 +167,31 @@ function AppContent() {
   const [query, setQuery] = useState("");
   const [activeTag, setActiveTag] = useState("All");
 
-  const { items: cartItems, itemsCount: cartCount, subtotal: cartSubtotal, promo, promoDiscount, fees: cartFees, total: cartTotal, addItem, incrementItem, decrementItem, removeItem, clearCart, applyPromo, clearPromo } =
-    useCart();
+  // Simulated loading placeholders: makes the UI feel real and gives skeleton targets for tests/a11y.
+  const [isMenuLoading, setIsMenuLoading] = useState(true);
+
+  const {
+    items: cartItems,
+    itemsCount: cartCount,
+    subtotal: cartSubtotal,
+    promo,
+    promoDiscount,
+    fees: cartFees,
+    total: cartTotal,
+    addItem,
+    incrementItem,
+    decrementItem,
+    removeItem,
+    clearCart,
+    applyPromo,
+    clearPromo,
+  } = useCart();
+
+  const { apiBase, wsUrl, isDemoMode } = useMemo(() => getDemoModeInfo(), []);
+  const [demoBannerDismissed, setDemoBannerDismissed] = useState(false);
 
   const [order, setOrder] = useState(() => {
-    const saved = window.localStorage.getItem("food_order_last_order_v1");
+    const saved = safeStorageGet(LAST_ORDER_STORAGE_KEY);
     return saved ? safeParseJson(saved, null) : null;
   });
 
@@ -132,20 +205,25 @@ function AppContent() {
 
   const progressTimerRef = useRef(null);
 
-  const apiBase =
-    process.env.REACT_APP_API_BASE ||
-    process.env.REACT_APP_BACKEND_URL ||
-    ""; // future backend integration
-  const wsUrl = process.env.REACT_APP_WS_URL || ""; // future real-time tracking
+  // Drawer focus management
+  const drawerRef = useRef(null);
+  const previouslyFocusedRef = useRef(null);
+  const closeButtonRef = useRef(null);
 
   // Apply theme to document
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
   }, [theme]);
 
-  // Persist order
+  // Simulated initial loading for menu
   useEffect(() => {
-    window.localStorage.setItem("food_order_last_order_v1", JSON.stringify(order));
+    const t = window.setTimeout(() => setIsMenuLoading(false), 450);
+    return () => window.clearTimeout(t);
+  }, []);
+
+  // Persist order (non-fatal if storage is unavailable)
+  useEffect(() => {
+    safeStorageSet(LAST_ORDER_STORAGE_KEY, JSON.stringify(order));
   }, [order]);
 
   // Drive a simple “tracking” simulation on the client (no backend required).
@@ -246,12 +324,12 @@ function AppContent() {
         },
       };
 
-      // Optional future backend: if REACT_APP_API_BASE is set, attempt POST.
+      // Optional backend: if REACT_APP_API_BASE is set, attempt POST.
       // If it fails or isn't configured, we fall back to a local simulated order.
       let createdOrder = null;
       if (apiBase) {
         try {
-          const res = await fetch(`${apiBase.replace(/\/$/, "")}/orders`, {
+          const res = await fetch(`${apiBase}/orders`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
@@ -294,14 +372,68 @@ function AppContent() {
     setOrder(null);
   }
 
-  // Accessibility: close cart with Escape
+  // Drawer: on open, remember focus and move focus into dialog
+  useEffect(() => {
+    if (!cartOpen) return;
+
+    previouslyFocusedRef.current = document.activeElement;
+    window.setTimeout(() => {
+      if (closeButtonRef.current) {
+        closeButtonRef.current.focus();
+        return;
+      }
+      const focusables = getFocusableElements(drawerRef.current);
+      if (focusables[0]) focusables[0].focus();
+    }, 0);
+  }, [cartOpen]);
+
+  // Drawer: trap focus + close with Escape
   useEffect(() => {
     function onKeyDown(e) {
-      if (e.key === "Escape") setCartOpen(false);
+      if (!cartOpen) return;
+
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setCartOpen(false);
+        return;
+      }
+
+      if (e.key !== "Tab") return;
+
+      const focusables = getFocusableElements(drawerRef.current);
+      if (focusables.length === 0) return;
+
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+
+      if (e.shiftKey) {
+        if (document.activeElement === first || document.activeElement === drawerRef.current) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else {
+        if (document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
     }
+
     if (cartOpen) window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [cartOpen]);
+
+  // Drawer: restore focus to invoking control when closed
+  useEffect(() => {
+    if (cartOpen) return;
+    const prev = previouslyFocusedRef.current;
+    if (prev && typeof prev.focus === "function") {
+      // Don't steal focus on initial mount; only after a real open/close cycle.
+      window.setTimeout(() => prev.focus(), 0);
+    }
+  }, [cartOpen]);
+
+  const showDemoBanner = isDemoMode && !demoBannerDismissed;
 
   return (
     <div className="App">
@@ -309,9 +441,25 @@ function AppContent() {
         Skip to content
       </a>
 
-      <header className="topbar">
+      {showDemoBanner ? (
+        <div className="demoBanner" role="status" aria-live="polite" aria-label="Demo mode banner">
+          <div className="demoBanner__content">
+            <strong>Demo mode:</strong> no backend configured. Set <code>REACT_APP_API_BASE</code> to connect to an API.
+          </div>
+          <button
+            className="demoBanner__close"
+            type="button"
+            onClick={() => setDemoBannerDismissed(true)}
+            aria-label="Dismiss demo mode banner"
+          >
+            ×
+          </button>
+        </div>
+      ) : null}
+
+      <header className="topbar" role="banner">
         <div className="topbar__inner">
-          <div className="brand">
+          <div className="brand" aria-label="OceanEats">
             <div className="brand__mark" aria-hidden="true">
               O
             </div>
@@ -349,6 +497,7 @@ function AppContent() {
               type="button"
               aria-haspopup="dialog"
               aria-expanded={cartOpen ? "true" : "false"}
+              aria-controls="cart-drawer"
             >
               Cart
               {cartCount > 0 ? <span className="cart-badge">{cartCount}</span> : null}
@@ -357,16 +506,18 @@ function AppContent() {
         </div>
       </header>
 
-      <main id="main" className="page">
-        <section className="hero">
+      <main id="main" className="page" role="main">
+        <section className="hero" aria-labelledby="hero-title">
           <div className="hero__content">
-            <h1 className="hero__title">Browse the menu</h1>
+            <h1 className="hero__title" id="hero-title">
+              Browse the menu
+            </h1>
             <p className="hero__subtitle">
               A clean, modern ordering flow with cart management and order tracking — styled in Ocean
               Professional.
             </p>
 
-            <div className="searchRow" role="search">
+            <div className="searchRow" role="search" aria-label="Search and filter menu">
               <label className="sr-only" htmlFor="search">
                 Search menu items
               </label>
@@ -386,6 +537,7 @@ function AppContent() {
                     className={`pill ${t === activeTag ? "pill--active" : ""}`}
                     onClick={() => setActiveTag(t)}
                     type="button"
+                    aria-pressed={t === activeTag ? "true" : "false"}
                   >
                     {t}
                   </button>
@@ -400,52 +552,102 @@ function AppContent() {
           </div>
         </section>
 
-        <section className="layout">
+        <section className="layout" aria-label="Main content">
           <section className="menu" aria-label="Menu items">
             <div className="menu__header">
               <h2 className="section-title">Menu</h2>
               <div className="section-meta">
-                {filteredMenu.length} item{filteredMenu.length === 1 ? "" : "s"} shown
+                {isMenuLoading
+                  ? "Loading…"
+                  : `${filteredMenu.length} item${filteredMenu.length === 1 ? "" : "s"} shown`}
               </div>
             </div>
 
-            <div className="grid">
-              {filteredMenu.map((item) => (
-                <article key={item.id} className="card">
-                  <div className="card__top">
-                    <div className="card__titleRow">
-                      <h3 className="card__title">{item.name}</h3>
-                      <div className="price">{formatMoney(item.price)}</div>
+            {isMenuLoading ? (
+              <div className="grid" aria-label="Loading menu items">
+                {Array.from({ length: 6 }).map((_, idx) => (
+                  <div key={idx} className="card skeleton" aria-hidden="true">
+                    <div className="skeleton__line skeleton__line--title" />
+                    <div className="skeleton__line" />
+                    <div className="skeleton__line skeleton__line--short" />
+                    <div className="skeleton__row">
+                      <div className="skeleton__pill" />
+                      <div className="skeleton__pill" />
+                      <div className="skeleton__pill" />
                     </div>
-                    <p className="card__desc">{item.description}</p>
-                    <div className="card__chips" aria-label="Item tags">
-                      {item.tags.map((t) => (
-                        <span key={t} className="chip">
-                          {t}
-                        </span>
-                      ))}
-                      <span className="chip chip--muted">{item.prepMins} min</span>
+                    <div className="skeleton__buttons">
+                      <div className="skeleton__btn" />
+                      <div className="skeleton__btn skeleton__btn--ghost" />
                     </div>
                   </div>
+                ))}
+              </div>
+            ) : filteredMenu.length === 0 ? (
+              <div className="empty" role="status" aria-live="polite">
+                <p className="empty__title">No menu items found.</p>
+                <p className="empty__desc">Try clearing filters or searching for another keyword.</p>
+                <div className="order__actions" style={{ marginTop: 12 }}>
+                  <button
+                    className="btn btn-ghost"
+                    type="button"
+                    onClick={() => {
+                      setQuery("");
+                      setActiveTag("All");
+                    }}
+                  >
+                    Reset filters
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="grid">
+                {filteredMenu.map((item) => (
+                  <article key={item.id} className="card" aria-labelledby={`menu-${item.id}-title`}>
+                    <div className="card__top">
+                      <div className="card__titleRow">
+                        <h3 className="card__title" id={`menu-${item.id}-title`}>
+                          {item.name}
+                        </h3>
+                        <div className="price" aria-label={`Price ${formatMoney(item.price)}`}>
+                          {formatMoney(item.price)}
+                        </div>
+                      </div>
+                      <p className="card__desc">{item.description}</p>
+                      <div className="card__chips" aria-label="Item tags">
+                        {item.tags.map((t) => (
+                          <span key={t} className="chip">
+                            {t}
+                          </span>
+                        ))}
+                        <span className="chip chip--muted">{item.prepMins} min</span>
+                      </div>
+                    </div>
 
-                  <div className="card__actions">
-                    <button className="btn btn-primary" onClick={() => addToCart(item.id)} type="button">
-                      Add to cart
-                    </button>
-                    <button
-                      className="btn btn-ghost"
-                      onClick={() => {
-                        setActiveTag("All");
-                        setQuery(item.name);
-                      }}
-                      type="button"
-                    >
-                      Find similar
-                    </button>
-                  </div>
-                </article>
-              ))}
-            </div>
+                    <div className="card__actions">
+                      <button
+                        className="btn btn-primary"
+                        onClick={() => addToCart(item.id)}
+                        type="button"
+                        aria-label={`Add ${item.name} to cart`}
+                      >
+                        Add to cart
+                      </button>
+                      <button
+                        className="btn btn-ghost"
+                        onClick={() => {
+                          setActiveTag("All");
+                          setQuery(item.name);
+                        }}
+                        type="button"
+                        aria-label={`Find items similar to ${item.name}`}
+                      >
+                        Find similar
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
           </section>
 
           <aside className="tracking" id="tracking" aria-label="Order tracking">
@@ -463,7 +665,7 @@ function AppContent() {
                     <code>REACT_APP_API_BASE</code> to post orders.
                   </p>
 
-                  <div className="envHint">
+                  <div className="envHint" aria-label="Environment configuration">
                     <div className="envHint__row">
                       <span className="envHint__k">API</span>
                       <span className="envHint__v">{apiBase || "Not configured"}</span>
@@ -475,13 +677,17 @@ function AppContent() {
                   </div>
                 </div>
               ) : (
-                <div className="order">
+                <div className="order" aria-label="Current order">
                   <div className="order__statusRow">
-                    <div className="statusPill">{order.status}</div>
-                    <div className="order__eta">{order.status === "Delivered" ? "Enjoy your meal!" : "Updating…"}</div>
+                    <div className="statusPill" aria-label={`Order status ${order.status}`}>
+                      {order.status}
+                    </div>
+                    <div className="order__eta">
+                      {order.status === "Delivered" ? "Enjoy your meal!" : "Updating…"}
+                    </div>
                   </div>
 
-                  <div className="progress">
+                  <div className="progress" aria-label="Order progress">
                     <div className="progress__bar" aria-hidden="true">
                       <div className="progress__fill" style={{ width: `${order.progress}%` }} />
                     </div>
@@ -491,7 +697,7 @@ function AppContent() {
                     </div>
                   </div>
 
-                  <div className="order__summary">
+                  <div className="order__summary" aria-label="Delivery details">
                     <div className="order__line">
                       <span>Customer</span>
                       <span className="order__value">{order.customerName}</span>
@@ -516,7 +722,7 @@ function AppContent() {
                     ))}
                   </div>
 
-                  <div className="totals">
+                  <div className="totals" aria-label="Order totals">
                     <div className="totals__row">
                       <span>Subtotal</span>
                       <span>{formatMoney(order.pricing.subtotal)}</span>
@@ -525,7 +731,10 @@ function AppContent() {
                     {order.pricing.promoDiscount ? (
                       <div className="totals__row">
                         <span>
-                          Promo {order.pricing.promoCode ? <span style={{ fontWeight: 900 }}>{order.pricing.promoCode}</span> : null}
+                          Promo{" "}
+                          {order.pricing.promoCode ? (
+                            <span style={{ fontWeight: 900 }}>{order.pricing.promoCode}</span>
+                          ) : null}
                         </span>
                         <span>-{formatMoney(order.pricing.promoDiscount)}</span>
                       </div>
@@ -565,7 +774,7 @@ function AppContent() {
           </aside>
         </section>
 
-        <footer className="footer">
+        <footer className="footer" role="contentinfo">
           <div className="footer__inner">
             <div className="footer__left">
               <div className="footer__title">OceanEats</div>
@@ -581,29 +790,42 @@ function AppContent() {
       </main>
 
       {/* Cart Drawer */}
-      <div className={`drawerOverlay ${cartOpen ? "drawerOverlay--open" : ""}`} aria-hidden={!cartOpen}>
+      <div
+        className={`drawerOverlay ${cartOpen ? "drawerOverlay--open" : ""}`}
+        aria-hidden={!cartOpen}
+      >
         <div
+          id="cart-drawer"
+          ref={drawerRef}
           className={`drawer ${cartOpen ? "drawer--open" : ""}`}
           role="dialog"
           aria-modal="true"
-          aria-label="Shopping cart"
+          aria-labelledby="cart-title"
         >
           <div className="drawer__header">
             <div>
-              <div className="drawer__title">Your cart</div>
+              <div className="drawer__title" id="cart-title">
+                Your cart
+              </div>
               <div className="drawer__subtitle">
                 {cartItems.length === 0 ? "Empty" : `${cartCount} item${cartCount === 1 ? "" : "s"}`}
               </div>
             </div>
 
-            <button className="iconBtn" onClick={() => setCartOpen(false)} type="button" aria-label="Close cart">
+            <button
+              ref={closeButtonRef}
+              className="iconBtn"
+              onClick={() => setCartOpen(false)}
+              type="button"
+              aria-label="Close cart"
+            >
               ×
             </button>
           </div>
 
           <div className="drawer__content">
             {cartItems.length === 0 ? (
-              <div className="empty">
+              <div className="empty" role="status" aria-live="polite">
                 <p className="empty__title">Your cart is empty.</p>
                 <p className="empty__desc">Add a few items from the menu to place an order.</p>
               </div>
@@ -611,7 +833,7 @@ function AppContent() {
               <>
                 <div className="cartList" aria-label="Cart items">
                   {cartItems.map((it) => (
-                    <div key={it.itemId} className="cartItem">
+                    <div key={it.itemId} className="cartItem" aria-label={`${it.name} cart line`}>
                       <div className="cartItem__main">
                         <div className="cartItem__name">{it.name}</div>
                         <div className="cartItem__meta">
@@ -653,7 +875,7 @@ function AppContent() {
                   ))}
                 </div>
 
-                <div className="checkout">
+                <div className="checkout" aria-label="Checkout">
                   <h3 className="checkout__title">Checkout</h3>
 
                   <div className="formGrid">
@@ -726,7 +948,9 @@ function AppContent() {
                         {promo.code ? (
                           <span>
                             Applied: <strong>{promo.code}</strong>{" "}
-                            {promo.discountRate > 0 ? `(−${Math.round(promo.discountRate * 100)}%)` : "(Not valid)"}
+                            {promo.discountRate > 0
+                              ? `(−${Math.round(promo.discountRate * 100)}%)`
+                              : "(Not valid)"}
                             <button
                               type="button"
                               className="btn btn-ghost"
@@ -734,13 +958,16 @@ function AppContent() {
                                 clearPromo();
                                 setPromoInput("");
                               }}
+                              aria-label="Clear promo code"
                               style={{ marginLeft: 10, padding: "8px 10px" }}
                             >
                               Clear
                             </button>
                           </span>
                         ) : (
-                          <span>Promo codes persist on reload. Example: <code>OCEAN10</code></span>
+                          <span>
+                            Promo codes persist on reload. Example: <code>OCEAN10</code>
+                          </span>
                         )}
                       </div>
                     </div>
@@ -769,7 +996,7 @@ function AppContent() {
                     </div>
                   </div>
 
-                  <div className="totals totals--cart">
+                  <div className="totals totals--cart" aria-label="Cart totals">
                     <div className="totals__row">
                       <span>Subtotal</span>
                       <span>{formatMoney(cartSubtotal)}</span>
@@ -777,7 +1004,9 @@ function AppContent() {
 
                     {promoDiscount > 0 ? (
                       <div className="totals__row">
-                        <span>Promo {promo.code ? <span style={{ fontWeight: 900 }}>{promo.code}</span> : ""}</span>
+                        <span>
+                          Promo {promo.code ? <span style={{ fontWeight: 900 }}>{promo.code}</span> : ""}
+                        </span>
                         <span>-{formatMoney(promoDiscount)}</span>
                       </div>
                     ) : null}
@@ -823,12 +1052,13 @@ function AppContent() {
                   <div className="smallNote">
                     {apiBase ? (
                       <span>
-                        Backend enabled via <code>REACT_APP_API_BASE</code>. If the POST fails, this demo falls back to a
-                        local order.
+                        Backend enabled via <code>REACT_APP_API_BASE</code>. If the POST fails, this demo
+                        falls back to a local order.
                       </span>
                     ) : (
                       <span>
-                        Demo mode: no backend configured. Set <code>REACT_APP_API_BASE</code> later to connect.
+                        Demo mode: no backend configured. Set <code>REACT_APP_API_BASE</code> later to
+                        connect.
                       </span>
                     )}
                   </div>

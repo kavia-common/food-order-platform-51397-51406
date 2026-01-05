@@ -5,9 +5,17 @@ beforeEach(() => {
   window.localStorage.clear();
 });
 
-test("renders menu heading", () => {
+test("renders menu heading and main landmark", () => {
   render(<App />);
   expect(screen.getByText(/browse the menu/i)).toBeInTheDocument();
+  expect(screen.getByRole("main")).toBeInTheDocument();
+  expect(screen.getByRole("contentinfo")).toBeInTheDocument();
+});
+
+test("shows demo mode banner when no REACT_APP_API_BASE is configured", () => {
+  render(<App />);
+  expect(screen.getByLabelText(/demo mode banner/i)).toBeInTheDocument();
+  expect(screen.getByText(/demo mode:/i)).toBeInTheDocument();
 });
 
 test("applies promo code and restores it from localStorage on reload", () => {

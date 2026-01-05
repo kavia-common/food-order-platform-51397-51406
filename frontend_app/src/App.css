@@ -153,6 +153,22 @@
   box-shadow: var(--focus);
 }
 
+.btn:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
+
+.qtyBtn:focus-visible,
+.iconBtn:focus-visible,
+.pill:focus-visible,
+.input:focus-visible,
+.textarea:focus-visible,
+.segBtn:focus-visible,
+.drawerOverlay__clickCatcher:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+}
+
 .btn:hover {
   transform: translateY(-1px);
   box-shadow: var(--shadow-soft);
@@ -593,6 +609,120 @@
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+}
+
+/* Demo banner (non-blocking) */
+.demoBanner {
+  position: sticky;
+  top: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-color);
+  background: color-mix(in srgb, var(--ocean-secondary) 16%, var(--bg-secondary));
+  color: var(--text-primary);
+}
+
+.demoBanner__content {
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.demoBanner__close {
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.demoBanner__close:focus {
+  outline: none;
+  box-shadow: var(--focus);
+}
+
+/* Loading skeletons */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+}
+
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.55),
+    transparent
+  );
+  animation: shimmer 1.15s infinite;
+}
+
+[data-theme="dark"] .skeleton::after {
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.10), transparent);
+}
+
+@keyframes shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.skeleton__line {
+  height: 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-primary) 65%, transparent);
+  border: 1px solid var(--border-color);
+}
+
+.skeleton__line--title {
+  height: 16px;
+  width: 72%;
+}
+
+.skeleton__line--short {
+  width: 58%;
+}
+
+.skeleton__row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.skeleton__pill {
+  width: 70px;
+  height: 24px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-primary) 65%, transparent);
+  border: 1px solid var(--border-color);
+}
+
+.skeleton__buttons {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.skeleton__btn {
+  height: 36px;
+  width: 120px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-primary) 65%, transparent);
+  border: 1px solid var(--border-color);
+}
+
+.skeleton__btn--ghost {
+  width: 110px;
 }
 
 /* Footer */
